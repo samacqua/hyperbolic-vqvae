@@ -1,0 +1,22 @@
+{
+  "name": "experiment_1",
+  "configs": {
+    "configs/config_mnist_hvq.json": {
+      "edits": {
+        "arch;args;d": 8,
+        "arch;args;k": 16,
+        "data_loader;args;n_exs": -1,
+        "trainer;epochs": 1,
+
+        "data_loader;type": "MnistDataLoader",
+        "arch;args;num_channels": 1,
+        "data_loader;args;data_dir": "data_wiki/",
+
+        "metrics": [["reconstruction_loss", "codebook_loss", "commit_loss", "smooth_loss"]],
+        "data_dependent_init": false,
+
+        "loss;args;enforce_smooth": false
+      }
+    }
+  }
+}

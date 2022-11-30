@@ -94,20 +94,18 @@ ENV/
 # Rope project settings
 .ropeproject
 
-# mkdocs documentation
-/site
-
 # mypy
 .mypy_cache/
 
 # input data, saved log, checkpoints
-data/
-data_wiki/
-input/
-saved/
-datasets/
+hyperbolic_autoencoders/data/
+hyperbolic_autoencoders/data_wiki/
+hyperbolic_autoencoders/saved/
 
 # editor, os cache directory
-.vscode/
-.idea/
-__MACOSX/
+*.vscode/
+*.idea/
+*__MACOSX/
+*.DS_Store
+
+*.datasets

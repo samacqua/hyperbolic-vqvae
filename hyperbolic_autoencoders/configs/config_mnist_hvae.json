@@ -1,20 +1,21 @@
 {
-    "name": "vqvae_mnist",
+    "name": "vae_mnist",
     "n_gpu": 0,
     "arch": {
-        "type": "VQ_CVAE",
+        "type": "VanillaVAE",
         "args": {
-            "num_channels": 1,
-            "commit_coef": 0.5,
-            "vq_coef":1,
-            "d": 64
+            "in_channels": 1,
+            "img_size": 32,
+            "latent_dims": 64,
+            "hyperbolic": true,
+            "hidden_dims": [16, 32]
         }
     },
     "data_loader": {
         "type": "MnistDataLoader",
         "args": {
             "data_dir": "data_wiki/",
-            "batch_size": 64,
+            "batch_size": 128,
             "shuffle": true,
             "validation_split": 0.0,
             "num_workers": 2,
@@ -29,7 +30,12 @@
             "amsgrad": true
         }
     },
-    "loss": "simple_vq_loss",
+    "loss": {
+        "type": "elbo_loss",
+        "args": {
+
+        }
+    },
     "metrics": [],
     "lr_scheduler": {
         "type": "StepLR",
