@@ -5,10 +5,11 @@ from torch.nn import functional as F
 from hypmath import WrappedNormal, poincareball, metrics
 from torch.distributions import Normal
 from typing import TypeVar, List, Optional, Tuple
-from geoopt.manifolds import Lorentz
 from .nearest_embed import NearestEmbed, nearest_embed
 import logging
 import numpy as np
+from base import BaseDataLoader
+
 
 Tensor = TypeVar('torch.tensor')
 
@@ -266,7 +267,8 @@ class VQVAE(BaseModel):
                  hyperbolic: bool = True,
                  hidden_dims: List[int] = None,
                  out_channels: Optional[int] = None,
-                 bounded_measure: bool = False) -> None:
+                 bounded_measure: bool = False,
+                 n_groups: int = 1) -> None:
         """Instantiates the VAE model.
 
         For shape comments, B = batch size, C = number of channels in the input image, H = height, W = width, E =
@@ -287,6 +289,8 @@ class VQVAE(BaseModel):
             bounded_measure (bool): Boolean to use a distance measure for quantization that is bounded in Euclidean
                 space. If hyperbolic, uses Minkowski norm instead of distance on Poincare ball. If Euclidean, uses
                 cosine distance instead of Euclidean distance.
+            n_groups (int): The number of groups for grouped vector-quantization (GVC). When set to 1, the same as
+                typical vector quantization.
         """
         super(VQVAE, self).__init__()
 
@@ -341,7 +345,7 @@ class VQVAE(BaseModel):
         )
 
         # Build Quantization.
-        self.emb = NearestEmbed(n_codebook, latent_dims, hyperbolic=hyperbolic, bounded_measure=bounded_measure)
+        self.emb = NearestEmbed(n_codebook, latent_dims, hyperbolic=hyperbolic, bounded_measure=bounded_measure, n_groups=n_groups)
 
         # Build decoder base.
         self.decoder_input = nn.Linear(latent_dims, hidden_dims[-1] * d_prime)
@@ -462,8 +466,13 @@ class ResBlock(nn.Module):
 
 class VQ_CVAE(nn.Module):
 
-    def __init__(self, d, k=10, bn=True, vq_coef=1, commit_coef=0.5, num_channels=3, hyperbolic=False, **kwargs):
+    def __init__(self, d: int, k: int = 10, bn: bool = True, vq_coef: float = 1., commit_coef: float = 0.5,
+                 num_channels: int = 3, hyperbolic: bool = False, custom_init: bool = False,
+                 n_classes: Optional[int] = None, n_groups: int = 1, **kwargs):
         super(VQ_CVAE, self).__init__()
+
+        if d % n_groups != 0:
+            raise ValueError("For Grouped vector-quantization, the embedding dimension must be divisible by the number of groups.")
 
         self.encoder = nn.Sequential(
             nn.Conv2d(num_channels, d, kernel_size=4, stride=2, padding=1),
@@ -478,44 +487,67 @@ class VQ_CVAE(nn.Module):
             nn.BatchNorm2d(d),
         )
 
-        self.decoder = nn.Sequential(
-            ResBlock(d, d),
-            nn.BatchNorm2d(d),
-            ResBlock(d, d),
-            nn.ConvTranspose2d(d, d, kernel_size=4, stride=2, padding=1),
-            nn.BatchNorm2d(d),
-            nn.ReLU(inplace=True),
-            nn.ConvTranspose2d(
-                d, num_channels, kernel_size=4, stride=2, padding=1),
-        )
+        # Classification task.
+        if n_classes:
+            self.decoder = nn.Sequential(
+                ResBlock(d, d),
+                nn.BatchNorm2d(d),
+                ResBlock(d, d),
+                nn.BatchNorm2d(d),
+                nn.Flatten(),
+                nn.ReLU(inplace=True),
+                nn.LazyLinear(n_classes)
+            )
+
+        # Reconstruct image.
+        else:
+            self.decoder = nn.Sequential(
+                ResBlock(d, d),
+                nn.BatchNorm2d(d),
+                ResBlock(d, d),
+                nn.ConvTranspose2d(d, d, kernel_size=4, stride=2, padding=1),
+                nn.BatchNorm2d(d),
+                nn.ReLU(inplace=True),
+                nn.ConvTranspose2d(
+                    d, num_channels, kernel_size=4, stride=2, padding=1)
+            )
 
         self.hyperbolic = hyperbolic
         self.manifold = poincareball.PoincareBall(d)
 
         self.k = k
         self.d = d
-        self.emb = NearestEmbed(k, d, hyperbolic=hyperbolic)
+        self.emb = NearestEmbed(k, d, hyperbolic=hyperbolic, n_groups=n_groups)
         self.vq_coef = vq_coef
         self.commit_coef = commit_coef
         self.mse = 0
         self.vq_loss = torch.zeros(1)
         self.commit_loss = 0
 
-        # for l in self.modules():
-        #     if isinstance(l, nn.Linear) or isinstance(l, nn.Conv2d):
-        #
-        #         l.weight.detach().normal_(0, 0.02)
-        #         torch.fmod(l.weight, 0.04)
-        #         nn.init.constant_(l.bias, 0)
-        #
-        # self.encoder[-1].weight.detach().fill_(1 / 40)
-        #
-        # self.emb.weight.detach().normal_(0, 0.02)
-        # torch.fmod(self.emb.weight, 0.04)
+        if custom_init:
+            for l in self.modules():
+                if isinstance(l, nn.Linear) or isinstance(l, nn.Conv2d):
 
-    def data_dependent_init(self, dataloader):
+                    l.weight.detach().normal_(0, 0.02)
+                    torch.fmod(l.weight, 0.04)
+                    nn.init.constant_(l.bias, 0)
+
+            self.encoder[-1].weight.detach().fill_(1 / 40)
+
+            self.emb.weight.detach().normal_(0, 0.02)
+            torch.fmod(self.emb.weight, 0.04)
+
+    def data_dependent_init(self, data_loader):
         """Initializes the codebooks based on the input data."""
-        raise NotImplementedError
+        data_loader = BaseDataLoader(data_loader.dataset, batch_size=self.k, shuffle=True,
+                                    validation_split=0, num_workers=data_loader.num_workers)
+
+        data, target = next(iter(data_loader))
+        encodings = self.encode(data)
+        batch_size, d, dim1, dim2 = encodings.shape
+        encodings = encodings.reshape(d, batch_size * dim1 * dim2)
+
+        self.emb.reinit_weights('data', encodings=encodings)
 
     def encode(self, x):
         encoded = self.encoder(x)
@@ -524,9 +556,10 @@ class VQ_CVAE(nn.Module):
         return encoded
 
     def decode(self, x):
-        decoded = torch.tanh(self.decoder(x))
         if self.hyperbolic:
-            decoded = self.manifold.logmap0(decoded)    # B x D
+            x = self.manifold.logmap0(x)    # B x D
+        decoded = torch.tanh(self.decoder(x))
+
         return decoded
 
     def forward(self, x):

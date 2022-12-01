@@ -22,10 +22,11 @@ def elbo_loss(x: Tensor, recon_x: Tensor, mu: Tensor, logvar: Tensor, **kwargs) 
     return MSE + KLD
 
 
-def vq_loss(input_img: Tensor, recon_img: Tensor, z_e: Tensor, z_q: Tensor, argmin: Tensor,
+def vq_loss(input_img: Tensor, recon_img: Tensor, target: Tensor, z_e: Tensor, z_q: Tensor, argmin: Tensor,
             emb_decoded: Tensor, quantized_decoded: Tensor, *args,
-            beta: float = 1., alpha: float = 0.5, hyperbolic: bool = False,
-            bounded_measure: bool = False, enforce_smooth: bool = False, smooth_coef: float = 1., **kwargs
+            beta: float = 0.9, alpha: float = 10, hyperbolic: bool = False,
+            bounded_measure: bool = False, enforce_smooth: bool = False, smooth_coef: float = 1.,
+            classification: bool = False, **kwargs
             ) -> Tuple[Tensor, Tensor, Tensor, Tensor, Tensor]:
     """Computes the loss function to train the VQ-VAE.
 
@@ -44,6 +45,7 @@ def vq_loss(input_img: Tensor, recon_img: Tensor, z_e: Tensor, z_q: Tensor, argm
         input_img (Tensor): The original data point.
         recon_img (Tensor): The output of the VQ-VAE, with gradients only going through chosen codebook vectors (stop
             gradient).
+        target (Tensor): The label of the input. Only used if doing classification.
         z_e (Tensor): The encoding before quantization.
         z_q (Tensor): The quantized encoding of the input with gradients only going through the codebook
             (does not include encoder).
@@ -65,7 +67,12 @@ def vq_loss(input_img: Tensor, recon_img: Tensor, z_e: Tensor, z_q: Tensor, argm
     """
 
     # The straight-through loss. Weights only flow through codebooks that were selected.
-    reconstruction_loss = F.mse_loss(input_img, recon_img)
+    if classification:
+        # For classification setting, this isn't really a reconstruction loss, but it is sort of "reconstructing" the
+        # original label.
+        reconstruction_loss = torch.nn.CrossEntropyLoss()(recon_img, target)
+    else:
+        reconstruction_loss = F.mse_loss(input_img, recon_img)
 
     # The commitment loss. Depends on if the embeddings are hyperbolic, and what distance metric is used.
     if hyperbolic:
@@ -79,8 +86,13 @@ def vq_loss(input_img: Tensor, recon_img: Tensor, z_e: Tensor, z_q: Tensor, argm
             cm_ = metrics.PoincareDistance(z_q.detach(), z_e, dim=1)
             commit_loss = torch.mean(cm_)
     else:
+        # Cosine distance.
         if bounded_measure:
-            raise NotImplementedError
+            d = torch.norm((z_q / torch.norm(z_q) - (z_e.detach() / torch.norm(z_e.detach()))), p='fro', dim=1)
+            codebook_loss = torch.mean(1/2 * (d ** 2))
+            d = torch.norm((z_q.detach() / torch.norm(z_q.detach()) - (z_e / torch.norm(z_e))), p='fro', dim=1)
+            commit_loss = torch.mean(1/2 * (d ** 2))
+
         # Euclidean distance.
         else:
             codebook_loss = torch.mean(torch.norm((z_q - z_e.detach()), p='fro', dim=1))
@@ -89,8 +101,14 @@ def vq_loss(input_img: Tensor, recon_img: Tensor, z_e: Tensor, z_q: Tensor, argm
     # The smoothness loss.
     smooth_loss = 0
     if enforce_smooth:
-        smooth_loss = torch.norm(emb_decoded - quantized_decoded)
+        if classification:
+            # If predicting 1-d distributions, use KL-divergence to keep the 2 decodings similar.
+            smooth_loss = nn.KLDivLoss()(emb_decoded, quantized_decoded)
+        else:
+            # If predicting images, use MSE to keep the 2 decodings similar.
+            smooth_loss = F.mse_loss(emb_decoded, quantized_decoded)
 
-    vq_loss = reconstruction_loss + codebook_loss * beta + commit_loss * alpha + smooth_loss * smooth_coef
+    cc_loss = (1 - beta) * codebook_loss + beta * commit_loss
+    vq_loss = reconstruction_loss + cc_loss * alpha + smooth_loss * smooth_coef
 
     return vq_loss, reconstruction_loss, codebook_loss, commit_loss, smooth_loss

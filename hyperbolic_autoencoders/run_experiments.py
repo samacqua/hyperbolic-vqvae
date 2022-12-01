@@ -33,9 +33,9 @@ def parse_experiment_config(config_path: str):
     exp_timestamp = datetime.now().strftime(r'%m%d_%H%M%S') if exp_config['name'] != 'temp' else 'temp'
     default_update = {'name': exp_timestamp, 'trainer;save_dir': "saved/" + exp_config["name"] + "/"}
 
-    # Remove existing temp directory.
-    if exp_config["name"] == "temp":
-        shutil.rmtree(default_update['trainer;save_dir'])
+    # # Remove existing temp directory.
+    # if exp_config["name"] == "temp":
+    #     shutil.rmtree(default_update['trainer;save_dir'])
 
     exp_configs = []
 

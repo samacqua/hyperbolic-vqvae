@@ -10,7 +10,7 @@ class MnistDataLoader(BaseDataLoader):
     MNIST data loading demo using BaseDataLoader
     """
 
-    def __init__(self, data_dir, batch_size, shuffle=True, validation_split=0.0, num_workers=1, training=True, img_size=64, n_exs=-1):
+    def __init__(self, data_dir, batch_size, shuffle=True, validation_split=0.0, num_workers=1, training=True, img_size=64, n_exs=-1, **kwargs):
         trsfm = transforms.Compose([
             transforms.ToTensor(),
             transforms.Normalize((0.1307,), (0.3081,)),
@@ -33,7 +33,7 @@ class CelebDataLoader(BaseDataLoader):
     https://s3-us-west-1.amazonaws.com/udacity-dlnfd/datasets/celeba.zip 
     """
 
-    def __init__(self, data_dir, batch_size, shuffle=True, validation_split=0.0, num_workers=1, img_size=64, n_exs=-1):
+    def __init__(self, data_dir, batch_size, shuffle=True, validation_split=0.0, num_workers=1, img_size=64, n_exs=-1, **kwargs):
         transform = transforms.Compose([
             transforms.Resize(img_size),
             transforms.CenterCrop(img_size),

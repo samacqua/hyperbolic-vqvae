@@ -1,11 +1,8 @@
 import numpy as np
 import torch
 from torch import nn
-from torch.autograd import Function, Variable
-import torch.nn.functional as F
+from torch.autograd import Function
 from hypmath import metrics
-import time
-from functools import partial
 
 
 class NearestEmbedFunc(Function):
@@ -23,7 +20,7 @@ class NearestEmbedFunc(Function):
         https://math.stackexchange.com/questions/2852458/bounded-similarity-measure-for-points-in-hyperbolic-space).
     """
     @staticmethod
-    def forward(ctx, input, emb, hyperbolic, bounded_measure):
+    def forward(ctx, input: torch.Tensor, emb: torch.Tensor, hyperbolic: bool, bounded_measure: bool):
         if input.size(1) != emb.size(0):
             raise RuntimeError('invalid argument: input.size(1) ({}) must be equal to emb.size(0) ({})'.
                                format(input.size(1), emb.size(0)))
@@ -44,6 +41,9 @@ class NearestEmbedFunc(Function):
                 emb.shape[0], *([1] * num_arbitrary_dims), emb.shape[1])
         else:
             emb_expanded = emb
+
+        k = emb.shape[1]
+        batch_size, d, h, w = input.shape
 
         # find nearest neighbors
         dist_dim_euc = 1
@@ -113,21 +113,20 @@ class NearestEmbedFunc(Function):
                 # t2 = time.time()
                 # print(t2 - t1)
                 # print("quantize 3", end='\t')
-                batch_size, d, h, w = input.shape
-                distances = torch.zeros(batch_size, h, w, emb.shape[1])
+                dist = torch.zeros(batch_size, h, w, emb.shape[1])
                 for batch_i in range(batch_size):
-                    distances[batch_i, :, :, :] = metrics.PoincareDistance(
+                    dist[batch_i, :, :, :] = metrics.PoincareDistance(
                             input[batch_i, :, :, :].unsqueeze(-1),
                             emb.view(emb.shape[0], 1, 1, emb.shape[1]), 0)
 
-                argmin = distances.argmin(-1)
+                argmin = dist.argmin(-1)
 
                 shifted_shape = [input.shape[0], *list(input.shape[2:]), input.shape[1]]
                 result = emb.t().index_select(0, argmin.view(-1)
                                                ).view(shifted_shape).permute(0, ctx.dims[-1], *ctx.dims[1:-1])
 
                 # t3 = time.time()
-                # assert ps(distances, distances1) == 1
+                # assert ps(dist, distances1) == 1
                 # assert ps(result, result1) == 1
                 # print(t3 - t2)
         else:
@@ -141,11 +140,11 @@ class NearestEmbedFunc(Function):
             else:
                 dist = torch.norm(x_expanded - emb_expanded, 2, dist_dim_euc)
 
-            _, argmin = dist.min(-1)
-            shifted_shape = [input.shape[0], *
-                             list(input.shape[2:]), input.shape[1]]
-            result = emb.t().index_select(0, argmin.view(-1)
-                                          ).view(shifted_shape).permute(0, ctx.dims[-1], *ctx.dims[1:-1])
+        _, argmin = dist.min(-1)
+        shifted_shape = [input.shape[0], *
+                         list(input.shape[2:]), input.shape[1]]
+        result = emb.t().index_select(0, argmin.view(-1)
+                                      ).view(shifted_shape).permute(0, ctx.dims[-1], *ctx.dims[1:-1])
 
         # Match vector norm of quantized embedding to that of un-quantized embedding if using bounded measure of
         # distance.
@@ -180,30 +179,71 @@ class NearestEmbedFunc(Function):
         return grad_input, grad_emb, None, None
 
 
-def nearest_embed(x, emb, hyperbolic: bool, bounded_measure: bool):
-    return NearestEmbedFunc().apply(x, emb, hyperbolic, bounded_measure)
+def nearest_embed(x, emb, hyperbolic: bool, bounded_measure: bool, n_groups: int):
+
+    batch_size, d, h, w = x.shape
+    group_size = d // n_groups
+
+    split_x = torch.split(x, group_size, dim=1)
+    result = torch.zeros_like(x)
+    argmins = torch.zeros(batch_size, n_groups, h, w).type(torch.LongTensor)
+    for i, subtensor in enumerate(split_x):
+        result[:, i*group_size:(i+1)*group_size, :, :], argmins[:,i,:,:] = NearestEmbedFunc().apply(subtensor, emb, hyperbolic, bounded_measure)
+
+    result /= n_groups ** 0.5
+    # out = NearestEmbedFunc().apply(x, emb, hyperbolic, bounded_measure)
+    return result, argmins
 
 
 class NearestEmbed(nn.Module):
 
-    def __init__(self, num_embeddings, embeddings_dim, hyperbolic=True, bounded_measure: bool = False):
+    def __init__(self, num_embeddings, embeddings_dim, hyperbolic=True, bounded_measure: bool = False, n_groups: int = 1):
         super(NearestEmbed, self).__init__()
-        self.weight = nn.Parameter(torch.rand(embeddings_dim, num_embeddings))
+
+        assert embeddings_dim % n_groups == 0
+        subtensor_size = embeddings_dim // n_groups
+
+        self.weight = nn.Parameter(torch.rand(subtensor_size, num_embeddings))
+
         self.hyperbolic = hyperbolic
         self.bounded_measure = bounded_measure
+        self.n_groups = n_groups
+
+        self.k = num_embeddings
+        self.d = subtensor_size
 
     def forward(self, x, weight_sg=False):
         """Input:
         ---------
         x - (batch_size, emb_size, *)
         """
-        return nearest_embed(x, self.weight.detach() if weight_sg else self.weight, self.hyperbolic, self.bounded_measure)
+        return nearest_embed(x, self.weight.detach() if weight_sg else self.weight, self.hyperbolic,
+                             self.bounded_measure, self.n_groups)
 
-    def reinit_weights(self, scheme='data', dataloader=None):
+    def reinit_weights(self, scheme='data', encodings=None):
         """Reinitialize the weights of the codebooks."""
 
         if scheme == 'data':
-            assert dataloader, "For data-dependent initialization, you need to provide a dataloader."
+
+            assert encodings is not None, "For data-dependent initialization, you need to provide encodings of the data."
+            assert encodings.shape[1] > self.k, "Must encode >= the number of codebook vectors."
+            assert encodings.shape[0] == self.d * self.n_groups, "Provided encodings have the incorrect dimensions."
+
+            # Split encodings into subtensors.
+            group_size = self.d
+            split_encodings = torch.split(encodings, group_size, dim=0)
+            flattened_encodings = torch.concat(split_encodings, dim=1)
+
+            # Randomly select k encodings.
+            perm = torch.randperm(flattened_encodings.shape[1])
+            idx = perm[:self.k]
+            samples = flattened_encodings[:,idx]
+
+            assert samples.shape == (self.d, self.k)
+
+            self.weight = nn.Parameter(samples.detach())
+        else:
+            raise ValueError("Unrecognized initialization scheme " + str(scheme))
 
 
 

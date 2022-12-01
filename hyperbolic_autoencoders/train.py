@@ -45,6 +45,7 @@ def train(config):
     criterion = getattr(module_loss, config['loss']['type'])
     criterion = partial(criterion, **config['loss']['args'])
     metrics = [getattr(module_metric, met) for met in config['metrics']]
+    val_metrics = [getattr(module_metric, met) for met in config['valid_metrics']]
 
     # build optimizer, learning rate scheduler. delete every lines containing lr_scheduler for disabling scheduler
     trainable_params = filter(lambda p: p.requires_grad, model.parameters())
@@ -58,7 +59,9 @@ def train(config):
                       data_loader=data_loader,
                       valid_data_loader=valid_data_loader,
                       lr_scheduler=lr_scheduler,
-                      metrics=metrics)
+                      metrics=metrics,
+                      valid_metric_ftns=val_metrics,
+                      len_epoch=config["data_loader"]["args"].get("len_epoch", None))
 
     trainer.train()
 

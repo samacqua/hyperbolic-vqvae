@@ -3,19 +3,28 @@
   "configs": {
     "configs/config_mnist_hvq.json": {
       "edits": {
-        "arch;args;d": 7,
-        "arch;args;k": 15,
+        "arch;args;d": 64,
+        "arch;args;k": 32,
+        "arch;args;n_groups": [2, 1],
+        "arch;args;n_classes": null,
+
+        "data_loader;args;validation_split": 0.005,
         "data_loader;args;n_exs": -1,
-        "trainer;epochs": 1,
+        "data_loader;args;len_epoch": 100,
+        "trainer;epochs": 5,
 
         "data_loader;type": "MnistDataLoader",
         "arch;args;num_channels": 1,
         "data_loader;args;data_dir": "data_wiki/",
 
-        "metrics": [["reconstruction_loss", "codebook_loss", "commit_loss", "smooth_loss"]],
-        "data_dependent_init": false,
+        "metrics": [["reconstruction_loss", "codebook_loss", "commit_loss", "smooth_loss", "n_active_codes"]],
+        "valid_metrics": [["fid"]],
 
-        "loss;args;enforce_smooth": false
+        "data_dependent_init": true,
+
+        "loss;args;enforce_smooth": false,
+        "loss;args;bounded_measure": false,
+        "loss;args;classification": false
       }
     }
   }

@@ -13,11 +13,13 @@ class Trainer(BaseTrainer):
     """
 
     def __init__(self, model, criterion, optimizer, config, device,
-                 data_loader, valid_data_loader=None, lr_scheduler=None, len_epoch=None, metrics=None):
+                 data_loader, valid_data_loader=None, lr_scheduler=None, len_epoch=None, metrics=None,
+                 valid_metric_ftns=None):
         super().__init__(model, criterion, optimizer, config, metrics)
         self.config = config
         self.device = device
         self.data_loader = data_loader
+        self.len_val = len(valid_data_loader) if valid_data_loader else 0
         if len_epoch is None:
             # epoch-based training
             self.len_epoch = len(self.data_loader)
@@ -25,15 +27,17 @@ class Trainer(BaseTrainer):
             # iteration-based training
             self.data_loader = inf_loop(data_loader)
             self.len_epoch = len_epoch
+
         self.valid_data_loader = valid_data_loader
         self.do_validation = self.valid_data_loader is not None
         self.lr_scheduler = lr_scheduler
         self.log_step = int(np.sqrt(data_loader.batch_size))
 
+        self.valid_metric_ftns = valid_metric_ftns or []    # Metric to only calculate during validation.
         self.train_metrics = MetricTracker(
             'loss', *[m.__name__ for m in self.metric_ftns], writer=self.writer)
         self.valid_metrics = MetricTracker(
-            'loss', *[m.__name__ for m in self.metric_ftns], writer=self.writer)
+            'loss', *[m.__name__ for m in (self.metric_ftns + self.valid_metric_ftns)], writer=self.writer)
 
     def _train_epoch(self, epoch):
         """
@@ -57,7 +61,8 @@ class Trainer(BaseTrainer):
 
             self.optimizer.zero_grad()
             recon_img, *aux_model_outputs = self.model(data)
-            loss, *aux_loss = self.criterion(data, recon_img, *aux_model_outputs)
+
+            loss, *aux_loss = self.criterion(data, recon_img, target, *aux_model_outputs)
             loss.backward()
 
             # optional gradient clipping
@@ -104,33 +109,43 @@ class Trainer(BaseTrainer):
         self.model.eval()
         self.valid_metrics.reset()
         with torch.no_grad():
+
+            val_mets = {}
+
+            self.writer.set_step(epoch, 'valid')
+
             for batch_idx, (data, target) in enumerate(self.valid_data_loader):
                 data, target = data.to(self.device), target.to(self.device)
-                output, mu, logvar = self.model(data)
-                loss = self.criterion(output, data, mu, logvar)
+                output, *aux_model_outputs = self.model(data)
+                loss, *aux_loss = self.criterion(data, output, target, *aux_model_outputs)
 
-                self.writer.set_step(
-                    (epoch - 1) * len(self.valid_data_loader) + batch_idx, 'valid')
-                self.valid_metrics.update('loss', loss.item())
-                # for met in self.metric_ftns:
-                #     self.valid_metrics.update(
-                #         met.__name__, met(output, target))
-                self.writer.add_image('input', make_grid(
-                    data.cpu(), nrow=8, normalize=True))
+                val_mets.setdefault('loss', []).append(loss.item())
+                for met in self.metric_ftns + self.valid_metric_ftns:
+                    val_mets.setdefault(met.__name__, []).append(
+                        met(loss, data, target, output, aux_model_outputs, aux_loss))
 
-        # add histogram of model parameters to the tensorboard
-        for name, p in self.model.named_parameters():
-            self.writer.add_histogram(name, p, bins='auto')
+                self.logger.debug('Valid Epoch: {} {} Loss: {:.6f}'.format(
+                    epoch,
+                    self._progress(batch_idx, val=True),
+                    loss.item()))
+
+            for met_name, met_res in val_mets.items():
+                self.valid_metrics.update(met_name, sum(met_res) / len(met_res))
+
+        # # add histogram of model parameters to the tensorboard
+        # for name, p in self.model.named_parameters():
+        #     self.writer.add_histogram(name, p, bins='auto')
         return self.valid_metrics.result()
 
-    def _progress(self, batch_idx):
+    def _progress(self, batch_idx, val=False):
         base = '[{}/{} ({:.0f}%)]'
-        if hasattr(self.data_loader, 'n_samples'):
-            current = batch_idx * self.data_loader.batch_size
-            total = self.data_loader.n_samples
+        dl = self.valid_data_loader if val else self.data_loader
+        if hasattr(dl, 'n_samples'):
+            current = batch_idx * dl.batch_size
+            total = dl.n_samples
         else:
             current = batch_idx
-            total = self.len_epoch
+            total = self.len_val if val else self.len_epoch
         return base.format(current, total, 100.0 * current / total)
 
 
@@ -189,6 +204,6 @@ def train(epoch, model, train_loader, optimizer, cuda, log_interval, save_path, 
 
     loss_string = '\t'.join(['{}: {:.6f}'.format(k, v) for k, v in epoch_losses.items()])
     logging.info('====> Epoch: {} {}'.format(epoch, loss_string))
-    writer.add_histogram('dict frequency', outputs[3], bins=range(k + 1))
-    model.print_atom_hist(outputs[3])
+    # writer.add_histogram('dict frequency', outputs[3], bins=range(k + 1))
+    # model.print_atom_hist(outputs[3])
     return epoch_losses
