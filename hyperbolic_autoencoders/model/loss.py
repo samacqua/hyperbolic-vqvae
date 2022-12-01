@@ -22,7 +22,7 @@ def elbo_loss(x: Tensor, recon_x: Tensor, mu: Tensor, logvar: Tensor, **kwargs) 
     return MSE + KLD
 
 
-def vq_loss(input_img: Tensor, recon_img: Tensor, encoding: Tensor, quantized_encoding: Tensor, argmin: Tensor,
+def vq_loss(input_img: Tensor, recon_img: Tensor, z_e: Tensor, z_q: Tensor, argmin: Tensor,
             emb_decoded: Tensor, quantized_decoded: Tensor, *args,
             beta: float = 1., alpha: float = 0.5, hyperbolic: bool = False,
             bounded_measure: bool = False, enforce_smooth: bool = False, smooth_coef: float = 1., **kwargs
@@ -30,20 +30,25 @@ def vq_loss(input_img: Tensor, recon_img: Tensor, encoding: Tensor, quantized_en
     """Computes the loss function to train the VQ-VAE.
 
     The loss has 3-4 components.
-        reconstruction loss:
-        codebook loss:
-        commitment loss:
-        smooth loss:
+        reconstruction loss: loss propagated through encoder and decoder from difference between reconstructed image and
+            original image. Uses "straight-through" assumption, where quantization operation is ignored in terms of how
+            it would effect gradient.
+        codebook loss: Distance between embedding and quantized embedding. Stop gradient applied to embedding so the
+            loss only effects the codebooks.
+        commitment loss: Distance between embedding and quantized embedding. Stop gradient applied to codebook so the
+            loss only effects the encoder (makes it "commit" to a codebook vector).
+        smooth loss: Distance between reconstruction from embedding and reconstruction from quantized embedding. Only
+            effect decoder.
 
     Args:
         input_img (Tensor): The original data point.
         recon_img (Tensor): The output of the VQ-VAE, with gradients only going through chosen codebook vectors (stop
             gradient).
-        encoding (Tensor): The encoding before quantization.
-        quantized_encoding (Tensor): The quantized encoding of the input with gradients only going through the codebook
+        z_e (Tensor): The encoding before quantization.
+        z_q (Tensor): The quantized encoding of the input with gradients only going through the codebook
             (does not include encoder).
         argmin (Tensor): The index of the closest codebook vector.
-        emb_decoded (Tensor): The output of decoding the un-quantized embedding.
+        emb_decoded (Tensor): The output of decoding the un-quantized embedding. Gradients only flow through decoder.
         quantized_decoded (Tensor): The output of decoding the quantized embedding, only carrying gradients through the
             decoder.
         beta (float): The scaling parameter of the codebook component of the loss.
@@ -59,26 +64,29 @@ def vq_loss(input_img: Tensor, recon_img: Tensor, encoding: Tensor, quantized_en
         smooth_coef (float): The scaling parameter of the smoothness component of the loss.
     """
 
+    # The straight-through loss. Weights only flow through codebooks that were selected.
     reconstruction_loss = F.mse_loss(input_img, recon_img)
 
+    # The commitment loss. Depends on if the embeddings are hyperbolic, and what distance metric is used.
     if hyperbolic:
-        # Distance on Poincare Ball.
-        if bounded_measure:
-            raise NotImplementedError
-        else:
-            cb_ = metrics.PoincareDistance(quantized_encoding, encoding.detach())
-            codebook_loss = torch.mean(torch.norm(cb_, 2, 1))
-            cm_ = metrics.PoincareDistance(quantized_encoding.detach(), encoding)
-            commit_loss = torch.mean(torch.norm(cm_, 2, 1))
-    else:
-        # Euclidean distance.
-        if bounded_measure:
-            raise NotImplementedError
-        else:
-            codebook_loss = torch.mean(torch.norm((quantized_encoding - encoding.detach()) ** 2, 2, 1))
-            commit_loss = torch.mean(torch.norm((quantized_encoding.detach() - encoding) ** 2, 2, 1))
 
-    # Compute the smoothness component of the loss function.
+        if bounded_measure:
+            raise NotImplementedError
+        # Distance on Poincare Ball.
+        else:
+            cb_ = metrics.PoincareDistance(z_q, z_e.detach(), dim=1)
+            codebook_loss = torch.mean(cb_)
+            cm_ = metrics.PoincareDistance(z_q.detach(), z_e, dim=1)
+            commit_loss = torch.mean(cm_)
+    else:
+        if bounded_measure:
+            raise NotImplementedError
+        # Euclidean distance.
+        else:
+            codebook_loss = torch.mean(torch.norm((z_q - z_e.detach()), p='fro', dim=1))
+            commit_loss = torch.mean(torch.norm((z_q.detach() - z_e), p='fro', dim=1))
+
+    # The smoothness loss.
     smooth_loss = 0
     if enforce_smooth:
         smooth_loss = torch.norm(emb_decoded - quantized_decoded)

@@ -365,7 +365,8 @@ class VQVAE(BaseModel):
             x (Tensor) [B x C x H x W]
 
         Returns:
-            A three-tuple of the reconstructed image, the unquantized embedding, and the quantized embedding.
+            A three-tuple of the reconstructed image (with stop gradient so only flows through selected codebooks),
+                the unquantized embedding, and the quantized embedding (with no gradients flowing through encoder).
         """
 
         # TODO: when to detatch for loss?

@@ -1,11 +1,15 @@
 import argparse
-import collections
 from parse_config import ConfigParser, _update_config
 import train
 import os
 from utils import read_json
 import itertools
 from datetime import datetime
+import shutil
+import torch
+
+
+torch.set_default_tensor_type(torch.DoubleTensor)
 
 
 def main(cfgs):
@@ -13,8 +17,9 @@ def main(cfgs):
     print("Running", len(cfgs), "experiments.")
 
     for i, cfg in enumerate(cfgs):
+
         print(f"Training {cfg.run_id} ({i+1}/{len(cfgs)})")
-        print(cfg['trainer']['save_dir'] + '/' + cfg['name'], end='\n\n')
+        print(cfg['name'], end='\n\n')
         train.train(cfg)
 
 
@@ -25,7 +30,12 @@ def parse_experiment_config(config_path: str):
     """
 
     exp_config = read_json(config_path)
-    exp_timestamp = datetime.now().strftime(r'%m%d_%H%M%S')
+    exp_timestamp = datetime.now().strftime(r'%m%d_%H%M%S') if exp_config['name'] != 'temp' else 'temp'
+    default_update = {'name': exp_timestamp, 'trainer;save_dir': "saved/" + exp_config["name"] + "/"}
+
+    # Remove existing temp directory.
+    if exp_config["name"] == "temp":
+        shutil.rmtree(default_update['trainer;save_dir'])
 
     exp_configs = []
 
@@ -56,7 +66,6 @@ def parse_experiment_config(config_path: str):
             edit_str = path_base_str + '_' + '_'.join([str(k.split(';')[-1]) + "=" + str(v) for k, v in edit_combo if k not in single_edit_fields])
 
             # Parse the base config + make edits.
-            default_update = {'name': exp_timestamp, 'trainer;save_dir': "saved/" + exp_config["name"] + "/"}
             update_dict = {**dict(edit_combo), **default_update}
             cfg = ConfigParser(read_json(cfg_path), run_id=edit_str, modification=update_dict)
             exp_configs.append(cfg)

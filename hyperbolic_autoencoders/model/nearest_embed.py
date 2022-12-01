@@ -4,6 +4,8 @@ from torch import nn
 from torch.autograd import Function, Variable
 import torch.nn.functional as F
 from hypmath import metrics
+import time
+from functools import partial
 
 
 class NearestEmbedFunc(Function):
@@ -54,7 +56,80 @@ class NearestEmbedFunc(Function):
 
             # Hyperbolic distance.
             else:
-                dist = metrics.PoincareDistance(emb_expanded, x_expanded, dist_dim_hyper)
+
+                # def ps(t1, t2):
+                #     assert t1.numel() == t2.numel()
+                #     return torch.isclose(t1, t2).sum() / t1.numel()
+                #
+                # print("quantize 1", end='\t')
+                # t0 = time.time()
+                # dists0 = metrics.PoincareDistance(emb_expanded, x_expanded, dist_dim_hyper)
+                # _, argmin0 = dists0.min(-1)
+                # shifted_shape = [input.shape[0], * list(input.shape[2:]), input.shape[1]]
+                # result0 = emb.t().index_select(0, argmin0.view(-1)
+                #                               ).view(shifted_shape).permute(0, ctx.dims[-1], *ctx.dims[1:-1])
+                #
+                # t1 = time.time()
+                # print(t1 - t0)
+                # batch_size, d, h, w = input.shape
+                #
+                # result1 = torch.zeros_like(input)
+                # distances1 = torch.zeros(batch_size, h, w, emb.shape[1])
+                # argmin1 = torch.zeros(batch_size, h, w)
+                #
+                #
+                # print("quantize 2", end='\t')
+                # for batch_i in range(batch_size):
+                #     for i in range(h):
+                #         for j in range(w):
+                #             patch = input[batch_i, :, i, j]
+                #
+                #             dists = metrics.PoincareDistance(patch.unsqueeze(-1), emb, 0)
+                #             distances1[batch_i, i, j, :] = dists
+                #
+                #             # slowest but most obviously correct way.
+                #             # k = emb.shape[1]
+                #             # dists = np.zeros(k)
+                #             # for cbi in range(k):
+                #             #     cb = emb[:, cbi]
+                #             #     dist_ = metrics.PoincareDistance(patch, cb, 0)
+                #             #     dists[cbi] = dist_
+                #
+                #             patch_argmin = dists.argmin()
+                #             patch_quantized = emb[:,patch_argmin]
+                #
+                #             result1[batch_i, :, i, j] = patch_quantized
+                #             argmin1[batch_i, i, j] = patch_argmin
+                #
+                #         a = input[batch_i, :, i, :]      # [7, 8], emb=[7, 15]
+                #         d = distances1[batch_i, i, :, :]  # [8, 15]
+                #         f = metrics.PoincareDistance
+                #         su = f(a.unsqueeze(-1), emb.view(emb.shape[0], 1, emb.shape[1]), 0)
+                #         try:
+                #             assert ps(su, d) == 1
+                #         except AssertionError:
+                #             import pdb; pdb.set_trace()
+                #
+                # t2 = time.time()
+                # print(t2 - t1)
+                # print("quantize 3", end='\t')
+                batch_size, d, h, w = input.shape
+                distances = torch.zeros(batch_size, h, w, emb.shape[1])
+                for batch_i in range(batch_size):
+                    distances[batch_i, :, :, :] = metrics.PoincareDistance(
+                            input[batch_i, :, :, :].unsqueeze(-1),
+                            emb.view(emb.shape[0], 1, 1, emb.shape[1]), 0)
+
+                argmin = distances.argmin(-1)
+
+                shifted_shape = [input.shape[0], *list(input.shape[2:]), input.shape[1]]
+                result = emb.t().index_select(0, argmin.view(-1)
+                                               ).view(shifted_shape).permute(0, ctx.dims[-1], *ctx.dims[1:-1])
+
+                # t3 = time.time()
+                # assert ps(distances, distances1) == 1
+                # assert ps(result, result1) == 1
+                # print(t3 - t2)
         else:
 
             # Cosine distance.
@@ -66,11 +141,11 @@ class NearestEmbedFunc(Function):
             else:
                 dist = torch.norm(x_expanded - emb_expanded, 2, dist_dim_euc)
 
-        _, argmin = dist.min(-1)
-        shifted_shape = [input.shape[0], *
-                         list(input.shape[2:]), input.shape[1]]
-        result = emb.t().index_select(0, argmin.view(-1)
-                                      ).view(shifted_shape).permute(0, ctx.dims[-1], *ctx.dims[1:-1])
+            _, argmin = dist.min(-1)
+            shifted_shape = [input.shape[0], *
+                             list(input.shape[2:]), input.shape[1]]
+            result = emb.t().index_select(0, argmin.view(-1)
+                                          ).view(shifted_shape).permute(0, ctx.dims[-1], *ctx.dims[1:-1])
 
         # Match vector norm of quantized embedding to that of un-quantized embedding if using bounded measure of
         # distance.

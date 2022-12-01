@@ -1,10 +1,10 @@
 {
-  "name": "experiment_1",
+  "name": "temp",
   "configs": {
     "configs/config_mnist_hvq.json": {
       "edits": {
-        "arch;args;d": 8,
-        "arch;args;k": 16,
+        "arch;args;d": 7,
+        "arch;args;k": 15,
         "data_loader;args;n_exs": -1,
         "trainer;epochs": 1,
 
