@@ -7,7 +7,7 @@ from hypmath import metrics
 Tensor = TypeVar('torch.tensor')
 
 
-def elbo_loss(x: Tensor, recon_x: Tensor, mu: Tensor, logvar: Tensor, **kwargs) -> Tensor:
+def elbo_loss(x: Tensor, recon_x: Tensor, target: Tensor, mu: Tensor, logvar: Tensor, **kwargs) -> Tensor:
     """Computes the ELBO Optimization objective for gaussian posterior (reconstruction term + regularization term)."""
 
     reconstruction_function = nn.MSELoss(reduction='sum')
@@ -19,7 +19,7 @@ def elbo_loss(x: Tensor, recon_x: Tensor, mu: Tensor, logvar: Tensor, **kwargs) 
     KLD_element = mu.pow(2).add_(logvar.exp()).mul_(-1).add_(1).add_(logvar)
     KLD = torch.sum(KLD_element).mul_(-0.5)
 
-    return MSE + KLD
+    return MSE + KLD, MSE, KLD
 
 
 def vq_loss(input_img: Tensor, recon_img: Tensor, target: Tensor, z_e: Tensor, z_q: Tensor, argmin: Tensor,
