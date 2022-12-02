@@ -30,8 +30,12 @@
             "amsgrad": true
         }
     },
-    "loss": "elbo_loss",
+    "loss": {
+        "type": "elbo_loss",
+        "args": {}
+    },
     "metrics": [],
+    "valid_metrics": [],
     "lr_scheduler": {
         "type": "StepLR",
         "args": {
