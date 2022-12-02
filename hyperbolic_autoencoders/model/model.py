@@ -177,7 +177,6 @@ class VanillaVAE(BaseModel):
         Returns:
             result (Tensor) [B x C x H x W]
         """
-
         if self.hyperbolic:
             z = self.manifold.logmap0(z)    # B x D
         result = self.decoder_input(z)  # B x (E1 * H' * W')
@@ -256,192 +255,10 @@ class VanillaVAE(BaseModel):
         return self.forward(x)[0]
 
 
-class VQVAE(BaseModel):
-    """Hyperbolic Vector Quanitized Variational Autoencoder"""
-
-    def __init__(self,
-                 in_channels: int,
-                 latent_dims: int,
-                 img_size: int,
-                 n_codebook: int,
-                 hyperbolic: bool = True,
-                 hidden_dims: List[int] = None,
-                 out_channels: Optional[int] = None,
-                 bounded_measure: bool = False,
-                 n_groups: int = 1) -> None:
-        """Instantiates the VAE model.
-
-        For shape comments, B = batch size, C = number of channels in the input image, H = height, W = width, E =
-        number of channels returned from the encoder, D = latent dimension, E1 = depth of first convolution of encoder
-        & last convolution of decoder, C2 = number of channels in the output image.
-
-        Params:
-            in_channels (int): Number of input channels.
-            latent_dims (int): Size of latent dimensions.
-            img_size (int): The height and width of the input image.
-            n_codebook (int): The number of codebook vectors.
-            hidden_dims (List[int]): List of hidden dimensions, reversed for decoder. Defaults to
-                [32, 64, 128, 256, 512]. So, the encoder will have 5 layers ending with depth=512. This final encoding
-                will be used to generate the encoding of the latent gaussians, then the decoder takes these encodings
-                and will have 5 layers ([512, 256, 128, 64, 32]) to create a "decoding", where a final layer will
-                convert to original image shape + depth.
-            out_channels (int): Number of output channels. Defaults to number of input channels.
-            bounded_measure (bool): Boolean to use a distance measure for quantization that is bounded in Euclidean
-                space. If hyperbolic, uses Minkowski norm instead of distance on Poincare ball. If Euclidean, uses
-                cosine distance instead of Euclidean distance.
-            n_groups (int): The number of groups for grouped vector-quantization (GVC). When set to 1, the same as
-                typical vector quantization.
-        """
-        super(VQVAE, self).__init__()
-
-        self.latent_dim = latent_dims
-        self.manifold = poincareball.PoincareBall(self.latent_dim)
-        self.hyperbolic = hyperbolic
-        out_channels = out_channels or in_channels
-
-        # Check images in correct format.
-        hidden_dims = hidden_dims or [32, 64, 128, 256, 512]
-
-        def is_power_of_two(n: int) -> bool:
-            """Checks if int is power of 2. https://stackoverflow.com/a/57027610."""
-            return (n != 0) and (n & (n - 1) == 0)
-
-        assert is_power_of_two(img_size), "Can currently only support images with H = W = power of 2 for simplicity."
-        self.hw_prime = int(img_size * 2 ** -len(hidden_dims))
-        assert self.hw_prime, "Too much conv for image size. Either decrease num hidden layers or increase img size."
-
-        # Create encoder.
-        self.hidden_dims = hidden_dims.copy()
-        self.encoder = Encoder(hidden_dims, in_channels)
-
-        # Parameterization of latent gaussians.
-        # If you flatten the encoding (B x E x H' x W') becomes (B x (E * H' * W')) = (B x D').
-        d_prime = self.hw_prime ** 2
-        self.fc_embed = nn.Linear(hidden_dims[-1] * d_prime, latent_dims)
-
-        d = 64
-        bn = True
-        self.full_encoder = nn.Sequential(
-            nn.Conv2d(in_channels, d, kernel_size=4, stride=2, padding=1),
-            nn.BatchNorm2d(d),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(d, d, kernel_size=4, stride=2, padding=1),
-            nn.BatchNorm2d(d),
-            nn.ReLU(inplace=True),
-            ResBlock(d, d, bn=bn),
-            nn.BatchNorm2d(d),
-            ResBlock(d, d, bn=bn),
-            nn.BatchNorm2d(d),
-        )
-        self.full_decoder = nn.Sequential(
-            ResBlock(d, d),
-            nn.BatchNorm2d(d),
-            ResBlock(d, d),
-            nn.ConvTranspose2d(d, d, kernel_size=4, stride=2, padding=1),
-            nn.BatchNorm2d(d),
-            nn.ReLU(inplace=True),
-            nn.ConvTranspose2d(
-                d, out_channels, kernel_size=4, stride=2, padding=1),
-        )
-
-        # Build Quantization.
-        self.emb = NearestEmbed(n_codebook, latent_dims, hyperbolic=hyperbolic, bounded_measure=bounded_measure, n_groups=n_groups)
-
-        # Build decoder base.
-        self.decoder_input = nn.Linear(latent_dims, hidden_dims[-1] * d_prime)
-        hidden_dims.reverse()
-        self.decoder = Decoder(hidden_dims)
-
-        # Build the final layer to recreate the image.
-        self.final_layer = nn.Sequential(
-            nn.ConvTranspose2d(hidden_dims[-1], hidden_dims[-1], kernel_size=(3, 3), stride=(2, 2),
-                               padding=(1, 1), output_padding=(1, 1)),
-            nn.BatchNorm2d(hidden_dims[-1]),
-            nn.LeakyReLU(),
-            nn.Conv2d(hidden_dims[-1], out_channels=out_channels,
-                      kernel_size=(3, 3), padding=1),
-            nn.Tanh())
-
-    def forward(self, x: Tensor, **kwargs) -> Tuple[Tensor, Tensor, Tensor]:
-        """Forward pass through the model.
-
-        Args:
-            x (Tensor) [B x C x H x W]
-
-        Returns:
-            A three-tuple of the reconstructed image (with stop gradient so only flows through selected codebooks),
-                the unquantized embedding, and the quantized embedding (with no gradients flowing through encoder).
-        """
-
-        # TODO: when to detatch for loss?
-
-        z_e = self.encode(x)
-        z_q, z_argmin = self.emb(z_e, weight_sg=True)
-        emb, _ = self.emb(z_e.detach())
-
-        return self.decode(z_q), z_e, emb
-
-    def encode(self, x: Tensor) -> Tensor:
-        """
-        Encodes the input by passing through the convolutional network
-        and outputs the latent variables.
-
-        Params:
-            x (Tensor): Input tensor [B x C x H x W]
-
-        Returns:
-            embed (Tensor): The hyperbolic embedding of the input.
-        """
-
-        # result = self.encoder(x)    # B x E x H' x W'
-        # result = torch.flatten(result, start_dim=1)     # B x (E * H' * W')
-        # embed = self.fc_embed(result)          # B x D
-        embed = self.full_encoder(x)
-        if self.hyperbolic:
-            embed = self.manifold.expmap0(embed)   # B x D
-
-        return embed
-
-    def decode(self, z: Tensor) -> Tensor:
-        """
-        Maps the given latent variables
-        onto the image space.
-
-        Params:
-            z (Tensor): Latent variable [B x D]
-
-        Returns:
-            result (Tensor) [B x C x H x W]
-        """
-
-        if self.hyperbolic:
-            z = self.manifold.logmap0(z)    # B x D
-        # result = self.decoder_input(z)  # B x (E1 * H' * W')
-        # result = result.view(-1, self.hidden_dims[-1], self.hw_prime, self.hw_prime)     # B x E x H' x W'
-        # result = self.decoder(result)   # B x E1 x H'' x W''
-        # result = self.final_layer(result)   # B x C2 x H x W
-        result = self.full_decoder(z)
-
-        return result
-
-    def generate(self, x: Tensor) -> Tensor:
-        """
-        Given an input image x, returns the reconstructed image.
-
-        Params:
-            x (Tensor): input image Tensor [B x C x H x W]
-
-        Returns:
-            (Tensor) [B x C x H x W]
-        """
-
-        return self.forward(x)[0]
-
-
 #####################
 
 
-class ResBlock(nn.Module):
+class ResBlock(BaseModel):
     def __init__(self, in_channels, out_channels, mid_channels=None, bn=False):
         super(ResBlock, self).__init__()
 
@@ -464,60 +281,81 @@ class ResBlock(nn.Module):
         return x + self.convs(x)
 
 
-class VQ_CVAE(nn.Module):
+def make_resnet_encoder(num_channels, d, bn=True):
+    return nn.Sequential(
+        nn.Conv2d(num_channels, d, kernel_size=4, stride=2, padding=1),
+        nn.BatchNorm2d(d),
+        nn.ReLU(inplace=True),
+        nn.Conv2d(d, d, kernel_size=4, stride=2, padding=1),
+        nn.BatchNorm2d(d),
+        nn.ReLU(inplace=True),
+        ResBlock(d, d, bn=bn),
+        nn.BatchNorm2d(d),
+        ResBlock(d, d, bn=bn),
+        nn.BatchNorm2d(d),
+    )
+
+
+class VQVAE(BaseModel):
 
     def __init__(self, d: int, k: int = 10, bn: bool = True, vq_coef: float = 1., commit_coef: float = 0.5,
                  num_channels: int = 3, hyperbolic: bool = False, custom_init: bool = False,
-                 n_classes: Optional[int] = None, n_groups: int = 1, **kwargs):
-        super(VQ_CVAE, self).__init__()
+                 n_classes: Optional[int] = None, n_groups: int = 1, resnet: bool = False, **kwargs):
+        super(VQVAE, self).__init__()
 
         if d % n_groups != 0:
             raise ValueError("For Grouped vector-quantization, the embedding dimension must be divisible by the number of groups.")
 
-        self.encoder = nn.Sequential(
-            nn.Conv2d(num_channels, d, kernel_size=4, stride=2, padding=1),
-            nn.BatchNorm2d(d),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(d, d, kernel_size=4, stride=2, padding=1),
-            nn.BatchNorm2d(d),
-            nn.ReLU(inplace=True),
-            ResBlock(d, d, bn=bn),
-            nn.BatchNorm2d(d),
-            ResBlock(d, d, bn=bn),
-            nn.BatchNorm2d(d),
-        )
+        # Make encoder.
+        hidden_dims = [64, d]
+        self.encoder = make_resnet_encoder(num_channels, d, bn) if resnet else Encoder(hidden_dims=hidden_dims,
+                                                                                       in_channels=1)
+        hidden_dims = list(reversed(hidden_dims))
 
-        # Classification task.
-        if n_classes:
-            self.decoder = nn.Sequential(
-                ResBlock(d, d),
-                nn.BatchNorm2d(d),
-                ResBlock(d, d),
-                nn.BatchNorm2d(d),
-                nn.Flatten(),
-                nn.ReLU(inplace=True),
-                nn.LazyLinear(n_classes)
-            )
+        # Decoder for classification task.
+        decoder_layers = [
+            ResBlock(d, d),
+            nn.BatchNorm2d(d),
+            ResBlock(d, d),
+        ] if resnet else [
+            Decoder(hidden_dims=hidden_dims),
+            nn.Tanh(),
+            nn.ConvTranspose2d(hidden_dims[-1], hidden_dims[-1], kernel_size=(3, 3), stride=(2, 2),
+                               padding=(1, 1), output_padding=(1, 1)),
+            nn.BatchNorm2d(hidden_dims[-1]),
+            nn.LeakyReLU(),
+            nn.Conv2d(hidden_dims[-1], out_channels=num_channels,
+                      kernel_size=(3, 3), padding=1),
+            nn.Tanh()]
 
-        # Reconstruct image.
-        else:
-            self.decoder = nn.Sequential(
-                ResBlock(d, d),
-                nn.BatchNorm2d(d),
-                ResBlock(d, d),
-                nn.ConvTranspose2d(d, d, kernel_size=4, stride=2, padding=1),
-                nn.BatchNorm2d(d),
-                nn.ReLU(inplace=True),
-                nn.ConvTranspose2d(
-                    d, num_channels, kernel_size=4, stride=2, padding=1)
-            )
+        if resnet:
+            if n_classes:
+                decoder_layers += [
+                    nn.BatchNorm2d(d),
+                    nn.Flatten(),
+                    nn.ReLU(inplace=True),
+                    nn.LazyLinear(n_classes)
+                ]
+
+            # Reconstruct image.
+            else:
+                decoder_layers += [
+                    nn.ConvTranspose2d(d, d, kernel_size=4, stride=2, padding=1),
+                    nn.BatchNorm2d(d),
+                    nn.ReLU(inplace=True),
+                    nn.ConvTranspose2d(
+                        d, num_channels, kernel_size=4, stride=2, padding=1),
+                    nn.Tanh()
+                ]
+
+        self.decoder = nn.Sequential(*decoder_layers)
 
         self.hyperbolic = hyperbolic
         self.manifold = poincareball.PoincareBall(d)
 
         self.k = k
         self.d = d
-        self.emb = NearestEmbed(k, d, hyperbolic=hyperbolic, n_groups=n_groups)
+        self.emb = NearestEmbed(k, d, hyperbolic=hyperbolic, n_groups=n_groups, manifold=self.manifold)
         self.vq_coef = vq_coef
         self.commit_coef = commit_coef
         self.mse = 0
@@ -558,43 +396,10 @@ class VQ_CVAE(nn.Module):
     def decode(self, x):
         if self.hyperbolic:
             x = self.manifold.logmap0(x)    # B x D
-        decoded = torch.tanh(self.decoder(x))
-
-        return decoded
+        return self.decoder(x)
 
     def forward(self, x):
         z_e = self.encode(x)
-        self.f = z_e.shape[-1]
         z_q, argmin = self.emb(z_e, weight_sg=True)
         emb, _ = self.emb(z_e.detach())
         return self.decode(z_q), z_e, emb, argmin, self.decode(z_e.detach()), self.decode(z_q.detach())
-
-    def sample(self, size):
-        sample = torch.randn(size, self.d, self.f,
-                             self.f, requires_grad=False),
-        if self.cuda():
-            sample = sample.cuda()
-        emb, _ = self.emb(sample)
-        return self.decode(emb.view(size, self.d, self.f, self.f)).cpu()
-
-    def loss_function(self, x, recon_x, z_e, emb, argmin):
-
-        self.mse = F.mse_loss(recon_x, x)
-
-        self.vq_loss = torch.mean(torch.norm((emb - z_e.detach())**2, 2, 1))
-        self.commit_loss = torch.mean(
-            torch.norm((emb.detach() - z_e)**2, 2, 1))
-
-        return self.mse + self.vq_coef*self.vq_loss + self.commit_coef*self.commit_loss
-
-    def latest_losses(self):
-        losses = {'mse': self.mse, 'vq': self.vq_loss, 'commitment': self.commit_loss}
-        losses['total'] = sum(losses.values())
-        return losses
-
-    def print_atom_hist(self, argmin):
-
-        argmin = argmin.detach().cpu().numpy()
-        unique, counts = np.unique(argmin, return_counts=True)
-        logging.info(counts)
-        logging.info(unique)
