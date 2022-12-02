@@ -3,6 +3,7 @@ import torch
 from torch import nn
 from torch.autograd import Function
 from hypmath import metrics
+import geoopt.manifolds
 
 
 class NearestEmbedFunc(Function):
@@ -197,13 +198,13 @@ def nearest_embed(x, emb, hyperbolic: bool, bounded_measure: bool, n_groups: int
 
 class NearestEmbed(nn.Module):
 
-    def __init__(self, num_embeddings, embeddings_dim, hyperbolic=True, bounded_measure: bool = False, n_groups: int = 1):
+    def __init__(self, num_embeddings, embeddings_dim, hyperbolic=True, bounded_measure: bool = False, n_groups: int = 1, manifold=None):
         super(NearestEmbed, self).__init__()
 
         assert embeddings_dim % n_groups == 0
         subtensor_size = embeddings_dim // n_groups
 
-        self.weight = nn.Parameter(torch.rand(subtensor_size, num_embeddings))
+        self.manifold = manifold
 
         self.hyperbolic = hyperbolic
         self.bounded_measure = bounded_measure
@@ -211,6 +212,9 @@ class NearestEmbed(nn.Module):
 
         self.k = num_embeddings
         self.d = subtensor_size
+
+        self.weight = None
+        self.reinit_weights('uniform')
 
     def forward(self, x, weight_sg=False):
         """Input:
@@ -242,72 +246,18 @@ class NearestEmbed(nn.Module):
             assert samples.shape == (self.d, self.k)
 
             self.weight = nn.Parameter(samples.detach())
+
+        elif scheme == 'uniform':
+            if self.hyperbolic:
+                self.weight = nn.Parameter(self.manifold.random(self.d, self.k))
+            else:
+                self.weight = nn.Parameter(torch.rand(self.d, self.k))
+
+        elif scheme == 'normal':
+            if self.hyperbolic:
+                self.weight = nn.Parameter(self.manifold.random_normal(self.d, self.k))
+            else:
+                self.weight = nn.Parameter(torch.randn(self.d, self.k))
+
         else:
             raise ValueError("Unrecognized initialization scheme " + str(scheme))
-
-
-
-
-
-# import numpy as np
-# import torch
-# from torch import nn
-# from torch.autograd import Function, Variable
-# from hypmath import metrics
-#
-#
-# class NearestEmbedFunc(Function):
-#     """
-#     Input:
-#     ------
-#     x - (batch_size, emb_dim, *)
-#         Last dimensions may be arbitrary
-#     emb - (emb_dim, num_emb)
-#     """
-#
-#     @staticmethod
-#     def forward(ctx, input, emb, hyperbolic):
-#         """
-#         https://lars76.github.io/2020/07/24/implementing-poincare-embedding.html
-#         Params:
-#             ctx:
-#             input:
-#             emb:
-#         :return:
-#         """
-#
-#         if input.size(1) != emb.size(0):
-#             raise RuntimeError('invalid argument: input.size(1) ({}) must be equal to emb.size(0) ({})'.
-#                                format(input.size(1), emb.size(0)))
-#
-#         # save sizes for backward
-#         ctx.batch_size = input.size(0)
-#         ctx.num_latents = int(np.prod(np.array(input.size()[2:])))
-#         ctx.emb_dim = emb.size(0)
-#         ctx.num_emb = emb.size(1)
-#         ctx.input_type = type(input)
-#         ctx.dims = list(range(len(input.size())))
-#
-#         # expand to be broadcast-able
-#         x_expanded = input.unsqueeze(-1)
-#         num_arbitrary_dims = len(ctx.dims) - 2
-#         if num_arbitrary_dims:
-#             emb_expanded = emb.view(
-#                 emb.shape[0], *([1] * num_arbitrary_dims), emb.shape[1])
-#         else:
-#             emb_expanded = emb
-#
-#         # Find nearest neighbors in space.
-#         dist_dim = 0
-#         dist = metrics.PoincareDistance(
-#             emb_expanded, x_expanded, dist_dim) if hyperbolic else torch.norm(x_expanded - emb_expanded, 2, dist_dim)
-#
-#         _, argmin = dist.min(-1)
-#         shifted_shape = [input.shape[0], *
-#                          list(input.shape[2:]), input.shape[1]]
-#         result = emb.t().index_select(0, argmin.view(-1)
-#                                       ).view(shifted_shape).permute(0, ctx.dims[-1], *ctx.dims[1:-1])
-#
-#         ctx.save_for_backward(argmin)
-#         return result.contiguous(), argmin
-
