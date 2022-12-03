@@ -9,7 +9,7 @@ from utils import read_json, write_json
 
 
 class ConfigParser:
-    def __init__(self, config, resume=None, modification=None, run_id=None):
+    def __init__(self, config, resume=None, modification=None, run_id=None, exist_ok_override=False):
         """
         class to parse configuration json file. Handles hyperparameters for training, initializations of modules, checkpoint saving
         and logging module.
@@ -33,7 +33,7 @@ class ConfigParser:
         self._log_dir = save_dir / 'log' / exper_name / run_id
 
         # make directory for saving checkpoints and log.
-        exist_ok = (run_id == '' or exper_name == 'temp')
+        exist_ok = (run_id == '' or exper_name == 'temp' or exist_ok_override)
         self.save_dir.mkdir(parents=True, exist_ok=exist_ok)
         self.log_dir.mkdir(parents=True, exist_ok=exist_ok)
 

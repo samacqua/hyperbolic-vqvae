@@ -37,3 +37,18 @@ class ProbabilisticBinaryTreeDataset(dataset.DatasetMixin):
     def get_example(self, i):
         filter_ = np.random.random(size=self.shape[-1]) < self.eps
         return (self.data[i].astype(bool) ^ filter_).astype(self.data.dtype)
+
+
+def get_dataset(depth, dataset_randomness):
+    train = get_data(depth)
+    valid = train.copy()
+    test = train.copy()
+    if dataset_randomness != -1:
+        train = ProbabilisticBinaryTreeDataset(
+            train, eps=dataset_randomness)
+        valid = ProbabilisticBinaryTreeDataset(
+            valid, eps=dataset_randomness)
+        test = ProbabilisticBinaryTreeDataset(
+            test, eps=dataset_randomness)
+
+    return train, valid, test

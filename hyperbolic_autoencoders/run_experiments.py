@@ -23,19 +23,59 @@ def main(cfgs):
         train.train(cfg)
 
 
-def parse_experiment_config(config_path: str):
+def get_run_resume_path(run_path: str):
+    """Gets the most recently saved checkpoint for a run in an experiment if it exists."""
+    checkpoint_prefix = "checkpoint-epoch"
+    checkpoint_postfix = ".pth"
+
+    # Get latest checkpoint.
+    if not os.path.exists(run_path):
+        return None
+    latest_epoch_path = None
+    latest_epoch_num = -1
+    for fname in os.listdir(run_path):
+        if checkpoint_prefix in fname:
+            assert fname.startswith(checkpoint_prefix) and fname.endswith(checkpoint_postfix)
+            epoch_num = int(fname[len(checkpoint_prefix):-len(checkpoint_postfix)])
+            if epoch_num > latest_epoch_num:
+                latest_epoch_num = epoch_num
+                latest_epoch_path = os.path.join(run_path, fname)
+
+    return latest_epoch_path
+
+
+def parse_experiment_config(args):
     """Parses a config file that specifies an experiment to run.
 
     Can accept a list of config files + edits to make to the files. Runs cartesian product of the edits.
     """
 
+    # Parse args.
+    config_path = args.config
+    resume_path = args.resume
+
+    # Resume experiment. Run directories made at initialization, so can just iterate through parent directory.
+    if resume_path:
+        assert config_path is None, "Resuming disregards config."
+        cfgs = []
+        for run_name in sorted(list(os.listdir(resume_path))):
+            run_path = os.path.join(resume_path, run_name)
+            resume_cfg = read_json(os.path.join(run_path, "config.json"))
+            run_resume_path = get_run_resume_path(run_path)
+            cfgs.append(ConfigParser(resume_cfg, run_id=run_name, resume=run_resume_path, exist_ok_override=True))
+
+        return cfgs
+
+    # Set parameters consistent across runs in experiment.
     exp_config = read_json(config_path)
     exp_timestamp = datetime.now().strftime(r'%m%d_%H%M%S') if exp_config['name'] != 'temp' else 'temp'
-    default_update = {'name': exp_timestamp, 'trainer;save_dir': "saved/" + exp_config["name"] + "/"}
 
-    # # Remove existing temp directory.
-    # if exp_config["name"] == "temp":
-    #     shutil.rmtree(default_update['trainer;save_dir'])
+    exp_path = "saved/" + exp_config["name"] + "/"
+    default_update = {'name': exp_timestamp, 'trainer;save_dir': exp_path}
+
+    # Remove existing temp directory (for doing testing -- don't care about saving results here).
+    if exp_config["name"] == "temp":
+        shutil.rmtree(default_update['trainer;save_dir'])
 
     exp_configs = []
 
@@ -70,6 +110,7 @@ def parse_experiment_config(config_path: str):
             cfg = ConfigParser(read_json(cfg_path), run_id=edit_str, modification=update_dict)
             exp_configs.append(cfg)
 
+    exp_configs.sort(key=lambda x: x.run_id)
     return exp_configs
 
 
@@ -77,6 +118,8 @@ if __name__ == "__main__":
     args = argparse.ArgumentParser(description='PyTorch Template')
     args.add_argument('-c', '--config', default=None, type=str,
                       help='experiment config file path (default: None)')
+    args.add_argument('-r', '--resume', default=None, type=str,
+                      help='path to experiment to resume.')
 
-    cfgs = parse_experiment_config(args.parse_args().config)
+    cfgs = parse_experiment_config(args.parse_args())
     main(cfgs)
