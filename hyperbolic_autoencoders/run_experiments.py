@@ -9,7 +9,7 @@ import shutil
 import torch
 
 
-torch.set_default_tensor_type(torch.DoubleTensor)
+torch.set_default_tensor_type(torch.FloatTensor)
 
 
 def main(cfgs):
@@ -68,14 +68,19 @@ def parse_experiment_config(args):
 
     # Set parameters consistent across runs in experiment.
     exp_config = read_json(config_path)
+    num_repeats = exp_config.get("repeats", None)
+    num_repeats = None if num_repeats == 1 else num_repeats
     exp_timestamp = datetime.now().strftime(r'%m%d_%H%M%S') if exp_config['name'] != 'temp' else 'temp'
 
     exp_path = "saved/" + exp_config["name"] + "/"
     default_update = {'name': exp_timestamp, 'trainer;save_dir': exp_path}
 
     # Remove existing temp directory (for doing testing -- don't care about saving results here).
-    if exp_config["name"] == "temp":
-        shutil.rmtree(default_update['trainer;save_dir'])
+    # if exp_config["name"] == "temp":
+    #     try:
+    #         shutil.rmtree(default_update['trainer;save_dir'])
+    #     except:
+    #         pass
 
     exp_configs = []
 
@@ -104,11 +109,16 @@ def parse_experiment_config(args):
             # Create string to describe run w/in experiment.
             # Made from name of base config + unique edits.
             edit_str = path_base_str + '_' + '_'.join([str(k.split(';')[-1]) + "=" + str(v) for k, v in edit_combo if k not in single_edit_fields])
+            edit_str = edit_str[:-1] if edit_str.endswith('_') else edit_str
+            # edit_str += '-float'
 
-            # Parse the base config + make edits.
-            update_dict = {**dict(edit_combo), **default_update}
-            cfg = ConfigParser(read_json(cfg_path), run_id=edit_str, modification=update_dict)
-            exp_configs.append(cfg)
+            for repeat_num in (range(num_repeats) if num_repeats else [None]):
+                run_edit_str = edit_str + (f"_{repeat_num}" if repeat_num is not None else "")
+
+                # Parse the base config + make edits.
+                update_dict = {**dict(edit_combo), **default_update}
+                cfg = ConfigParser(read_json(cfg_path), run_id=run_edit_str, modification=update_dict)
+                exp_configs.append(cfg)
 
     exp_configs.sort(key=lambda x: x.run_id)
     return exp_configs

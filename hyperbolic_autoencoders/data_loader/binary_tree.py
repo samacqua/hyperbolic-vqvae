@@ -9,6 +9,8 @@ def hasone(node_index, dim_index):
 
 
 def hamming_distance(x, y):
+    x = np.array(x)
+    y = np.array(y)
     return (x.astype(np.int32) ^ y.astype(np.int32)).sum()
 
 

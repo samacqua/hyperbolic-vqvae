@@ -1,0 +1,36 @@
+{
+  "name": "mnist-reconstruction",
+  "repeats": 5,
+  "configs": {
+    "configs/hvq_base.json": {
+      "edits": {
+        "arch;args;resnet": true,
+        "arch;args;hidden_dims": [[32, 2], [32, 5], [32, 10], [32, 20]],
+        "arch;args;n_groups": 1,
+        "arch;args;k": 16,
+
+        "data_loader;args;n_exs": -1,
+        "data_loader;args;validation_split": 0.05,
+        "trainer;epochs": 1,
+
+        "metrics": [["reconstruction_loss", "commit_loss", "n_active_codes"]],
+        "valid_metrics": [["reconstruction_loss"]]
+      }
+    },
+    "configs/vq_base.json": {
+      "edits": {
+        "arch;args;resnet": true,
+        "arch;args;hidden_dims": [[32, 2], [32, 5], [32, 10], [32, 20]],
+        "arch;args;n_groups": 1,
+        "arch;args;k": 16,
+
+        "data_loader;args;n_exs": -1,
+        "data_loader;args;validation_split": 0.05,
+        "trainer;epochs": 1,
+
+        "metrics": [["reconstruction_loss", "commit_loss", "n_active_codes"]],
+        "valid_metrics": [["reconstruction_loss"]]
+      }
+    }
+  }
+}

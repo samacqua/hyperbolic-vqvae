@@ -1,13 +1,12 @@
 {
-    "name": "vqvae_mnist",
+    "name": "vq-vae",
     "n_gpu": 0,
     "arch": {
-        "type": "VQ_CVAE",
+        "type": "VQVAE",
         "args": {
             "num_channels": 1,
             "commit_coef": 0.5,
-            "vq_coef": 1,
-            "d": 64,
+            "hidden_dims": 64,
             "hyperbolic": false,
             "bounded_measure": false
         }
@@ -39,8 +38,8 @@
             "enforce_smooth": false
         }
     },
-    "metrics": [],
-    "valid_metrics": [],
+    "metrics": ["reconstruction_loss", "commit_loss", "smooth_loss", "n_active_codes"],
+    "valid_metrics": ["fid", "reconstruction_loss"],
     "lr_scheduler": {
         "type": "StepLR",
         "args": {

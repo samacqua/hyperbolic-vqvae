@@ -4,7 +4,7 @@ from torch import nn
 from torch.nn import functional as F
 from hypmath import WrappedNormal, poincareball, metrics
 from torch.distributions import Normal
-from typing import TypeVar, List, Optional, Tuple
+from typing import TypeVar, List, Optional, Tuple, Union
 from .nearest_embed import NearestEmbed, nearest_embed
 import logging
 import numpy as np
@@ -43,6 +43,34 @@ class Encoder(BaseModel):
         return self.encoder(x)
 
 
+class FlatEncoder(BaseModel):
+    """Flat encoder. Sequence of linear layers + non-linearity."""
+
+    def __init__(self, in_size: int, hidden_dims: List[int], nonlinearity=nn.Tanh):
+        """Initializes the encoder.
+
+        Params:
+            hidden_dims (List[int]): List of the depth of each convolutional layer.
+            in_channels: (int): The number of channels in the input image.
+        """
+        super(FlatEncoder, self).__init__()
+
+        modules = []
+        hidden_dims = [in_size] + hidden_dims
+
+        for h_dim_in, h_dim_out in zip(hidden_dims[:-1], hidden_dims[1:]):
+            modules.append(
+                nn.Sequential(
+                    nn.Linear(h_dim_in, h_dim_out),
+                    nonlinearity())
+            )
+
+        self.encoder = nn.Sequential(*modules)
+
+    def forward(self, x: Tensor) -> Tensor:
+        return self.encoder(x)
+
+
 class Decoder(BaseModel):
     """Convolutional decoder. Sequence of convolutional transpose layer + batch norm + lReLU."""
 
@@ -63,6 +91,34 @@ class Decoder(BaseModel):
                                        padding=(1, 1), output_padding=(1, 1)),
                     nn.BatchNorm2d(hidden_dims[i + 1]),
                     nn.LeakyReLU())
+            )
+
+        self.decoder = nn.Sequential(*modules)
+
+    def forward(self, x: Tensor) -> Tensor:
+        return self.decoder(x)
+
+
+class FlatDecoder(BaseModel):
+    """Flat decoder. Sequence of linear layer + non-linearity."""
+
+    def __init__(self, hidden_dims: List[int], out_size: int, nonlinearity=nn.Tanh):
+        """Initializes the decoder.
+
+        Params:
+            hidden_dims (List[int]): List of the depth of each convolutional layer.
+        """
+
+        super(FlatDecoder, self).__init__()
+
+        modules = []
+        hidden_dims.append(out_size)
+
+        for h_dim_in, h_dim_out in zip(hidden_dims[:-1], hidden_dims[1:]):
+            modules.append(
+                nn.Sequential(
+                    nn.Linear(h_dim_in, h_dim_out),
+                    nonlinearity())
             )
 
         self.decoder = nn.Sequential(*modules)
@@ -195,7 +251,7 @@ class VanillaVAE(BaseModel):
             mu (Tensor): Mean of Gaussian latent variables [B x D]
             logvar (Tensor): log-Variance of Gaussian latent variables [B x D]
 
-        Returns: 
+        Returns:
             z (Tensor) [B x D]
         """
 
@@ -255,6 +311,67 @@ class VanillaVAE(BaseModel):
         return self.forward(x)[0]
 
 
+class FlatVAE(VanillaVAE):
+    def __init__(self, data_shape: int = 255, hidden_d: int = 32, latent_d: int = 16, hyperbolic: bool = False):
+        super(VanillaVAE, self).__init__()
+
+        self.manifold = poincareball.PoincareBall(latent_d) if hyperbolic else None
+        self.hyperbolic = hyperbolic
+
+        self.encoder = nn.Sequential(
+            nn.Linear(data_shape, hidden_d),
+            nn.Tanh()
+        )
+
+        self.fc_mu = nn.Linear(hidden_d, latent_d)
+        self.fc_var = nn.Linear(hidden_d, latent_d)
+
+        self.decoder = nn.Sequential(
+            nn.Linear(latent_d, hidden_d),
+            nn.Tanh(),
+            nn.Linear(hidden_d, data_shape)
+        )
+
+    def encode(self, x):
+        emb = self.encoder(x)
+        mu, log_var = self.fc_mu(emb), self.fc_var(emb)
+        if self.hyperbolic:
+            mu = self.manifold.expmap0(mu)   # B x D
+            log_var = F.softplus(log_var)     # B x D
+        return mu, log_var
+
+    def decode(self, z):
+        if self.hyperbolic:
+            z = self.manifold.logmap0(z)    # B x D
+        return self.decoder(z)
+
+    def forward(self, x):
+        mu, log_var = self.encode(x)  # (B x D, B x D)
+        z = self.reparameterize(mu, log_var)  # B x D
+        output = self.decode(z)  # B x C x H x W
+
+        return output, mu, log_var
+
+    def reparameterize(self, mu: Tensor, logvar: Tensor) -> Tensor:
+        """
+        Reparameterization trick to sample from N(mu, var) from
+        N(0,1)
+
+        Params:
+            mu (Tensor): Mean of Gaussian latent variables [B x D]
+            logvar (Tensor): log-Variance of Gaussian latent variables [B x D]
+
+        Returns:
+            z (Tensor) [B x D]
+        """
+
+        std = torch.exp(0.5 * logvar)
+        dist = WrappedNormal(mu, std, self.manifold) if self.hyperbolic else Normal(mu, std)
+        z = dist.rsample()
+
+        return z
+
+
 #####################
 
 
@@ -281,70 +398,94 @@ class ResBlock(BaseModel):
         return x + self.convs(x)
 
 
-def make_resnet_encoder(num_channels, d, bn=True):
+def make_resnet_encoder(num_channels, d, bn=True, final_d=None):
+    final_d = final_d or d
     return nn.Sequential(
         nn.Conv2d(num_channels, d, kernel_size=4, stride=2, padding=1),
         nn.BatchNorm2d(d),
         nn.ReLU(inplace=True),
+
         nn.Conv2d(d, d, kernel_size=4, stride=2, padding=1),
         nn.BatchNorm2d(d),
         nn.ReLU(inplace=True),
+
         ResBlock(d, d, bn=bn),
         nn.BatchNorm2d(d),
+
         ResBlock(d, d, bn=bn),
         nn.BatchNorm2d(d),
+
+        nn.Conv2d(d, final_d, kernel_size=4, stride=2, padding=1),
+        nn.BatchNorm2d(final_d),
     )
 
 
 class VQVAE(BaseModel):
 
-    def __init__(self, d: int, k: int = 10, bn: bool = True, vq_coef: float = 1., commit_coef: float = 0.5,
+    def __init__(self, hidden_dims: Union[List[int], int] = 64, k: int = 10, bn: bool = True, commit_coef: float = 0.5,
                  num_channels: int = 3, hyperbolic: bool = False, custom_init: bool = False,
                  n_classes: Optional[int] = None, n_groups: int = 1, resnet: bool = False, **kwargs):
         super(VQVAE, self).__init__()
 
+        hidden_dims = [hidden_dims] if isinstance(hidden_dims, int) else hidden_dims
+        d = hidden_dims[-1]
+        d0 = hidden_dims[0]
         if d % n_groups != 0:
             raise ValueError("For Grouped vector-quantization, the embedding dimension must be divisible by the number of groups.")
 
         # Make encoder.
-        hidden_dims = [64, d]
-        self.encoder = make_resnet_encoder(num_channels, d, bn) if resnet else Encoder(hidden_dims=hidden_dims,
-                                                                                       in_channels=1)
+        if resnet and len(hidden_dims) > 2:
+            raise ValueError("Resnet requires constant latent dimension or just 2 (normal + final). Given list.")
+
+        self.encoder = make_resnet_encoder(num_channels, d0, bn, d) if resnet else Encoder(hidden_dims=hidden_dims,
+                                                                                       in_channels=num_channels)
         hidden_dims = list(reversed(hidden_dims))
 
-        # Decoder for classification task.
-        decoder_layers = [
-            ResBlock(d, d),
-            nn.BatchNorm2d(d),
-            ResBlock(d, d),
-        ] if resnet else [
-            Decoder(hidden_dims=hidden_dims),
-            nn.Tanh(),
-            nn.ConvTranspose2d(hidden_dims[-1], hidden_dims[-1], kernel_size=(3, 3), stride=(2, 2),
-                               padding=(1, 1), output_padding=(1, 1)),
-            nn.BatchNorm2d(hidden_dims[-1]),
-            nn.LeakyReLU(),
-            nn.Conv2d(hidden_dims[-1], out_channels=num_channels,
-                      kernel_size=(3, 3), padding=1),
-            nn.Tanh()]
-
         if resnet:
+            decoder_layers = [
+                nn.ConvTranspose2d(d, d0, kernel_size=4, stride=2, padding=1),
+                nn.BatchNorm2d(d0),
+                nn.ReLU(inplace=False),
+
+                ResBlock(d0, d0),
+                nn.BatchNorm2d(d0),
+                ResBlock(d0, d0),
+            ]
             if n_classes:
                 decoder_layers += [
-                    nn.BatchNorm2d(d),
+                    nn.BatchNorm2d(d0),
                     nn.Flatten(),
-                    nn.ReLU(inplace=True),
+                    nn.ReLU(inplace=False),
                     nn.LazyLinear(n_classes)
                 ]
-
-            # Reconstruct image.
             else:
                 decoder_layers += [
-                    nn.ConvTranspose2d(d, d, kernel_size=4, stride=2, padding=1),
-                    nn.BatchNorm2d(d),
-                    nn.ReLU(inplace=True),
+                    nn.ConvTranspose2d(d0, d0, kernel_size=4, stride=2, padding=1),
+                    nn.BatchNorm2d(d0),
+                    nn.ReLU(inplace=False),
                     nn.ConvTranspose2d(
-                        d, num_channels, kernel_size=4, stride=2, padding=1),
+                        d0, num_channels, kernel_size=4, stride=2, padding=1),
+                    nn.Tanh()
+                ]
+        else:
+            self.hidden_dims = hidden_dims.copy()
+            decoder_layers = [
+                Decoder(hidden_dims=hidden_dims),
+                nn.Tanh()
+            ]
+            if n_classes:
+                decoder_layers += [
+                    nn.Flatten(),
+                    nn.LazyLinear(n_classes)
+                ]
+            else:
+                decoder_layers += [
+                    nn.ConvTranspose2d(d, d0, kernel_size=(3, 3), stride=(2, 2),
+                                       padding=(1, 1), output_padding=(1, 1)),
+                    nn.BatchNorm2d(d0),
+                    nn.LeakyReLU(),
+                    nn.Conv2d(d0, out_channels=num_channels,
+                              kernel_size=(3, 3), padding=1),
                     nn.Tanh()
                 ]
 
@@ -356,7 +497,6 @@ class VQVAE(BaseModel):
         self.k = k
         self.d = d
         self.emb = NearestEmbed(k, d, hyperbolic=hyperbolic, n_groups=n_groups, manifold=self.manifold)
-        self.vq_coef = vq_coef
         self.commit_coef = commit_coef
         self.mse = 0
         self.vq_loss = torch.zeros(1)
@@ -403,3 +543,77 @@ class VQVAE(BaseModel):
         z_q, argmin = self.emb(z_e, weight_sg=True)
         emb, _ = self.emb(z_e.detach())
         return self.decode(z_q), z_e, emb, argmin, self.decode(z_e.detach()), self.decode(z_q.detach())
+
+    def plot_codebooks(self):
+        """Visualize the codebook_vectors."""
+        reshaped_codebooks = self.emb.weight.detach().reshape(self.k, self.d, 1, 1)
+        decoded_codebooks = self.decode(reshaped_codebooks)
+        return decoded_codebooks.detach()
+
+    def visualize_im_codebooks(self, x):
+        """Visualize the codebooks that make up the inference on an example."""
+
+        assert len(x.shape) == 3, "can only visualize 1 image at a time."
+
+        # Get inference.
+        x = x.unsqueeze(0)
+        z_e = self.encode(x.detach())
+        z_q, argmin = self.emb(z_e.detach(), weight_sg=True)
+        recon = self.decode(z_q.detach()).detach().squeeze()
+
+        # Reshape vals.
+        argmin = argmin.squeeze()
+        bottleneck_h, bottleneck_w = argmin.shape
+        x = x.squeeze()
+        data_h, data_w = x.shape
+        step_n = data_h // bottleneck_h
+
+        import matplotlib.pyplot as plt
+        fig, ((ax0, ax1), (ax2, ax3)) = plt.subplots(2, 2, figsize=(8, 8))
+
+        # Plot original image.
+        ax0.imshow(x, cmap='gray', vmin=0, vmax=1)
+
+        ax0.set_xticks(np.arange(-0.5, data_w, step=step_n))
+        ax0.set_yticks(np.arange(-0.5, data_h, step=step_n))
+        ax0.set_xticklabels(np.arange((data_w//step_n)+1, step=1))
+        ax0.set_yticklabels(reversed(np.arange((data_h//step_n)+1, step=1)))
+        ax0.grid()
+
+        # Plot reconstruction.
+        ax1.imshow(recon, cmap='gray', vmin=0, vmax=1)
+
+        ax1.set_xticks(np.arange(-0.5, data_w, step=step_n))
+        ax1.set_yticks(np.arange(-0.5, data_h, step=step_n))
+        ax1.set_xticklabels(np.arange((data_w//step_n)+1, step=1))
+        ax1.set_yticklabels(reversed(np.arange((data_h//step_n)+1, step=1)))
+        ax1.grid()
+
+        # Plot argmins.
+        for i in range(bottleneck_h):
+            for j in range(bottleneck_w):
+                c = argmin[i][j].item()
+                ax2.text(i + 0.5, j + 0.5, str(c), va='center', ha='center')
+
+        ax2.set_xlim(0, bottleneck_w)
+        ax2.set_ylim(0, bottleneck_h)
+        ax2.set_xticks(np.arange(bottleneck_w+1))
+        ax2.set_yticks(np.arange(bottleneck_h+1))
+        ax2.grid()
+
+        # Plot codebooks.
+        codebooks = self.plot_codebooks().squeeze()
+        k, cbh, cbw = codebooks.shape
+        cbw *= int(np.sqrt(k))
+        cbh *= int(np.sqrt(k))
+        codebooks = codebooks.reshape(cbh, cbw)
+        ax3.imshow(codebooks, cmap='gray', vmin=0, vmax=1)
+
+        ax3.set_xticks(np.arange(-0.5, cbw, step=step_n))
+        ax3.set_yticks(np.arange(-0.5, cbh, step=step_n))
+        ax3.set_xticklabels(np.arange((cbw // step_n) + 1, step=1))
+        ax3.set_yticklabels(reversed(np.arange((cbh // step_n) + 1, step=1)))
+        ax3.grid()
+
+        plt.tight_layout()
+        plt.show()

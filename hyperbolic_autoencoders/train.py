@@ -65,6 +65,13 @@ def train(config):
 
     trainer.train()
 
+    logger.info("Done training.")
+
+    # hyperbolic = True
+    # visualize.visualize_embeddings(data_loader, model, hyperbolic=hyperbolic)
+    # corrs = module_metric.distance_correlation(data_loader, model, hyperbolic=hyperbolic)
+    # print(corrs)
+
 
 if __name__ == '__main__':
     args = argparse.ArgumentParser(description='PyTorch Template')

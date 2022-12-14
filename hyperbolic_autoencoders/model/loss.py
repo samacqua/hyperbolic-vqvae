@@ -7,11 +7,21 @@ from hypmath import metrics
 Tensor = TypeVar('torch.tensor')
 
 
-def elbo_loss(x: Tensor, recon_x: Tensor, target: Tensor, mu: Tensor, logvar: Tensor, **kwargs) -> Tensor:
+def elbo_loss(x: Tensor, recon_x: Tensor, target: Tensor, mu: Tensor, logvar: Tensor, recon_func='mse', **kwargs) -> Tensor:
     """Computes the ELBO Optimization objective for gaussian posterior (reconstruction term + regularization term)."""
 
-    reconstruction_function = nn.MSELoss(reduction='sum')
-    MSE = reconstruction_function(recon_x, x)
+    if recon_func == 'mse':
+        reconstruction_function = nn.MSELoss(reduction='sum')
+        MSE = reconstruction_function(recon_x, x)
+    elif recon_func == 'log_prob':
+        b = recon_x.shape[0]
+        nlls = torch.zeros_like(x)
+        for i in range(b):
+            distribution = torch.distributions.Bernoulli(logits=recon_x[i])
+            nlls[i,:] = -distribution.log_prob(x[i])
+        MSE = torch.mean(nlls)
+    else:
+        raise ValueError("Unrecognized reconstruction function " + str(recon_func))
 
     # https://arxiv.org/abs/1312.6114 (Appendix B)
     # 0.5 * sum(1 + log(sigma^2) - mu^2 - sigma^2)
@@ -20,6 +30,19 @@ def elbo_loss(x: Tensor, recon_x: Tensor, target: Tensor, mu: Tensor, logvar: Te
     KLD = torch.sum(KLD_element).mul_(-0.5)
 
     return MSE + KLD, MSE, KLD
+
+
+def recon_loss(x: Tensor, recon_x: Tensor, target: Tensor, *args, recon_func='mse', **kwargs):
+    if recon_func == 'mse':
+        reconstruction_function = nn.MSELoss(reduction='sum')
+        MSE = reconstruction_function(recon_x, x)
+    elif recon_func == 'log_prob':
+        distribution = torch.distributions.Categorical(logits=recon_x.T)
+        MSE = -torch.mean(distribution.log_prob(x))
+    else:
+        raise ValueError("Unrecognized reconstruction function " + str(recon_func))
+
+    return MSE, torch.zeros(0)
 
 
 def vq_loss(input_img: Tensor, recon_img: Tensor, target: Tensor, z_e: Tensor, z_q: Tensor, argmin: Tensor,

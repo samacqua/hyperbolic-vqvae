@@ -1,0 +1,48 @@
+{
+  "name": "cifar-classification",
+  "repeats": 5,
+  "configs": {
+    "configs/hvq_base.json": {
+      "edits": {
+        "arch;args;resnet": true,
+        "arch;args;hidden_dims": [[32, 2], [32, 5], [32, 10], [32, 20]],
+        "arch;args;n_groups": 1,
+        "arch;args;k": 16,
+
+        "data_loader;args;n_exs": -1,
+        "data_loader;args;validation_split": 0.05,
+        "trainer;epochs": 2,
+
+        "arch;args;n_classes": 10,
+        "loss;args;classification": true,
+
+        "arch;args;num_channels": 3,
+        "data_loader;type": "CifarDataLoader",
+
+        "metrics": [["reconstruction_loss", "commit_loss", "n_active_codes", "classification_accuracy"]],
+        "valid_metrics": [["classification_accuracy", "reconstruction_loss"]]
+      }
+    },
+    "configs/vq_base.json": {
+      "edits": {
+        "arch;args;resnet": true,
+        "arch;args;hidden_dims": [[32, 2], [32, 5], [32, 10], [32, 20]],
+        "arch;args;n_groups": 1,
+        "arch;args;k": 16,
+
+        "data_loader;args;n_exs": -1,
+        "data_loader;args;validation_split": 0.05,
+        "trainer;epochs": 2,
+
+        "arch;args;n_classes": 10,
+        "loss;args;classification": true,
+
+        "arch;args;num_channels": 3,
+        "data_loader;type": "CifarDataLoader",
+
+        "metrics": [["reconstruction_loss", "commit_loss", "n_active_codes", "classification_accuracy"]],
+        "valid_metrics": [["classification_accuracy", "reconstruction_loss"]]
+      }
+    }
+  }
+}

@@ -1,5 +1,8 @@
 import torch
 from torchmetrics.image.fid import FrechetInceptionDistance
+import numpy as np
+from data_loader import binary_tree
+from hypmath import metrics
 
 
 def test_metric(*args):
@@ -11,6 +14,7 @@ def classification_accuracy(loss, data, target, output, aux_model_outputs, aux_l
     """Returns the classification accuracy of the model's predictions on a classification task."""
     pred_score, pred_label = torch.max(output, dim=1)
     return (pred_label == target).sum() / target.numel()
+
 
 def fid(loss, data, target, recon_img, aux_model_outputs, aux_loss):
     """Plots the Fréchet Inception Distance between the original image and the reconstruction."""
@@ -72,3 +76,55 @@ def n_active_codes(loss, data, target, recon_img, aux_model_outputs, aux_loss):
     """Plots smooth component of loss term."""
     z_e, emb, argmin, z_e_decoding, z_q_decoding = aux_model_outputs
     return torch.bincount(argmin.view(-1)).count_nonzero()
+
+
+### Binary Tree Dataset Metrics ###
+
+
+def distance_correlation(data_loader, model, hyperbolic=True):
+    """On the binary tree dataset, compute distance between binary tree distance and embedding distance."""
+
+    N = len(data_loader.data)
+
+    # Get encoding of actual tree.
+    z, _ = model.encode(torch.tensor(data_loader.data, dtype=torch.float64))
+
+    # Get encoding of perturbations of tree.
+    rand_data = []
+    for _ in range(N):
+        sampled, *_ = next(iter(data_loader))
+        rand_data += list(sampled)
+
+        if len(rand_data) > N:
+            break
+
+    rand_data = torch.stack(rand_data[:N])
+    z_prob, _ = model.encode(rand_data)
+
+    # Compute distances.
+    hamming_dists = np.zeros((N, N))
+    euclid_dists = np.zeros((N, N))
+    z_dists = np.zeros((N, N))
+    z_dists_prob = np.zeros((N, N))
+    if hyperbolic:
+        comparator = lambda x, y: metrics.PoincareDistance(x, y, dim=0)
+    else:
+        comparator = lambda x, y: np.sqrt(((x - y) ** 2).sum())
+
+    for i in range(N):
+        for j in range(i):
+
+            hamming_dists[i, j] = binary_tree.hamming_distance(
+                data_loader.data[i], data_loader.data[j])
+            euclid_dists[i, j] = binary_tree.euclid_distance(
+                data_loader.data[i], data_loader.data[j])
+            z_dists[i, j] = comparator(z[i], z[j])
+            z_dists_prob[i, j] = comparator(z_prob[i], z_prob[j])
+
+    filt_ = np.fromfunction(lambda i, j: i > j, shape=hamming_dists.shape)
+
+    # corr-with-hamming, corr-with-euclid, corr-with-hamming-noise, corr-with-euclid-noise
+    return (np.corrcoef(hamming_dists[filt_], z_dists[filt_])[0, 1],
+            np.corrcoef(euclid_dists[filt_], z_dists[filt_])[0, 1],
+            np.corrcoef(hamming_dists[filt_], z_dists_prob[filt_])[0, 1],
+            np.corrcoef(euclid_dists[filt_], z_dists_prob[filt_])[0, 1])

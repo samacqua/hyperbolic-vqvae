@@ -1,0 +1,26 @@
+{
+  "name": "temp",
+  "configs": {
+    "configs/hvae_base.json": {
+      "edits": {
+
+        "arch;type": "FlatVAE",
+        "arch;args": {
+            "data_shape": 255,
+            "latent_d": 2,
+            "hyperbolic": true,
+            "hidden_d": 100
+        },
+        "loss;type": "elbo_loss",
+        "loss;args;recon_func": "log_prob",
+
+        "data_loader;args;n_exs": 30600,
+        "data_loader;args;batch_size": 255,
+        "data_loader;args;validation_split": 0,
+        "trainer;epochs": 1,
+
+        "data_loader;type": "BinaryTreeDataLoader"
+      }
+    }
+  }
+}

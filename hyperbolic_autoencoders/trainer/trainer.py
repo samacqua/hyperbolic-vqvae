@@ -54,6 +54,7 @@ class Trainer(BaseTrainer):
         ### hVAE train ###
         self.model.train()
         self.train_metrics.reset()
+        n_steps_logged = 0
 
         for batch_idx, (data, target) in enumerate(self.data_loader):
 
@@ -76,15 +77,29 @@ class Trainer(BaseTrainer):
                 self.train_metrics.update(met.__name__, met(loss, data, target, recon_img, aux_model_outputs, aux_loss))
 
             if batch_idx % self.log_step == 0:
+                n_steps_logged += 1
+
                 self.logger.debug('Train Epoch: {} {} Loss: {:.6f}'.format(
                     epoch,
                     self._progress(batch_idx),
                     loss.item()))
 
-                self.writer.add_image('input', make_grid(
-                    data.cpu(), nrow=8, normalize=True))
-                self.writer.add_image('recon', make_grid(
-                    recon_img.cpu(), nrow=8, normalize=True))
+                if data.shape == recon_img.shape:
+                    self.writer.add_image('input', make_grid(
+                        data.cpu(), nrow=8, normalize=False))
+                    self.writer.add_image('recon', make_grid(
+                        recon_img.cpu(), nrow=8, normalize=False))
+
+                # try:
+                #     if n_steps_logged == 1:
+                #         codebooks = self.model.plot_codebooks()
+                #         self.writer.add_image('codebooks', make_grid(
+                #             codebooks.cpu(), nrow=int(np.sqrt(self.model.k)), normalize=False))
+                #
+                #         self.model.visualize_im_codebooks(data[0,:,:,:])
+                # except Exception as e:
+                #     raise e    # only implemented for VQ-VAE -- very hacky but just testing it out.
+
 
             if batch_idx == self.len_epoch:
                 break
@@ -130,7 +145,7 @@ class Trainer(BaseTrainer):
                     loss.item()))
 
             for met_name, met_res in val_mets.items():
-                self.valid_metrics.update(met_name, sum(met_res) / len(met_res))
+                self.valid_metrics.update(met_name, float(sum(met_res) / len(met_res)))
 
         # # add histogram of model parameters to the tensorboard
         # for name, p in self.model.named_parameters():
